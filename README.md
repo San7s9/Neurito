@@ -209,5 +209,3 @@ Con tasa 0.01 y 500 épocas, la red acierta casi 9 de cada 10 ejemplos, pero cho
 4. **La distribución de los datos no es la del juego.** Los datos de prueba tienen 55 % de ejemplos de "saltar", mientras que en el juego la mayoría de los fotogramas son de "esperar". Además, la red solo vio velocidades entre 4.5 y 8.5.
 
 En resumen, una precisión alta indica que la red imita bien las etiquetas, pero no garantiza que salte en el momento exacto que exige la física. Para evaluar a Neurito hay que medir también **choques y obstáculos esquivados en el juego**.
-
-> Nota: cada partida tiene solo unos 20 a 24 obstáculos. Con otra semilla o partidas más largas, los números pueden cambiar un poco, pero las tendencias se mantienen.
