@@ -209,3 +209,177 @@ Con tasa 0.01 y 500 épocas, la red acierta casi 9 de cada 10 ejemplos, pero cho
 4. **La distribución de los datos no es la del juego.** Los datos de prueba tienen 55 % de ejemplos de "saltar", mientras que en el juego la mayoría de los fotogramas son de "esperar". Además, la red solo vio velocidades entre 4.5 y 8.5.
 
 En resumen, una precisión alta indica que la red imita bien las etiquetas, pero no garantiza que salte en el momento exacto que exige la física. Para evaluar a Neurito hay que medir también **choques y obstáculos esquivados en el juego**.
+
+---
+
+# Neurito 3.0 – Aprende a encontrar comida en un laberinto
+
+En la tercera parte, Neurito busca comida dentro de tres laberintos de 9×9. La red tiene arquitectura **165 → 96 → 4**: recibe el mapa (one-hot de 3), su posición (one-hot de 81) y la meta (one-hot de 81); tiene 96 neuronas ocultas con ReLU y 4 salidas con Softmax (arriba, abajo, izquierda, derecha). Las etiquetas las da un **experto BFS**, que conoce la ruta más corta. Es **aprendizaje supervisado por imitación**, no aprendizaje por refuerzo: durante el juego la red decide sola, sin consultar BFS.
+
+## Archivos nuevos
+
+| Archivo | Descripción |
+|---|---|
+| `laberinto_mundo.py` | Mapas, movimiento, experto BFS y navegación asistida. |
+| `laberinto_red.py` | Red neuronal manual (`RedLaberinto`) y generación de datos. |
+| `laberinto.py` | Juego con Pygame, sprites y gráfica de la pérdida. |
+| `test_laberinto.py` | Pruebas automáticas (las 5 pasan). |
+| `experimentos_laberinto.py` | Corre los experimentos sin abrir la ventana y muestra los resultados en consola. |
+| `GUIA_LABERINTO.md` | Guía de la actividad. |
+
+```bash
+uv sync
+uv run laberinto.py                              # juego
+uv run python -m unittest -v test_laberinto.py   # pruebas
+uv run experimentos_laberinto.py                 # experimentos
+```
+
+## Cómo se midió
+
+`experimentos_laberinto.py` usa exactamente la misma red, los mismos datos y la misma regla de decisión (`elegir_accion`) que `laberinto.py`, pero sin dibujar. Semilla 42.
+
+- **Datos:** 3576 ejemplos (mapa, posición, meta → movimiento de BFS): 2860 de entrenamiento y 716 de prueba. Las clases están balanceadas (arriba 26.7 %, abajo 26.3 %, izquierda 21.4 %, derecha 25.5 %).
+- **Navegación:** se juegan los **716 retos de prueba**, es decir, combinaciones de inicio y meta que la red nunca vio. Igual que en el juego, cada reto tiene un máximo de **45 intentos** (movimientos + choques); si no llega a la comida, es un **atasco**.
+- **Métricas:**
+  - *Comida*: porcentaje de retos completados.
+  - *Atasco pared*: no llegó y chocó con paredes. En red pura, chocar significa quedarse en la misma casilla y repetir la misma decisión para siempre.
+  - *Atasco ciclo*: no llegó y nunca chocó, así que estuvo dando vueltas.
+  - *Eficiencia de ruta*: pasos óptimos de BFS / pasos reales en los retos completados (100 % = ruta más corta).
+
+## Resultados
+
+### 1. Neurito sin entrenar: ¿por qué se atasca?
+
+| Pérdida | Prec. prueba | Comida | Atasco pared | Atasco ciclo | Choques por reto |
+|---|---|---|---|---|---|
+| sin entrenar | 27.7 % | 3.1 % | 82.3 % | 14.7 % | 36.4 |
+
+- Con pesos aleatorios, las salidas Softmax son casi iguales (la probabilidad máxima promedio es 29.7 %, cerca del 25 % del azar), y la precisión es de azar (27.7 %).
+- Pero la red no es aleatoria en cada paso: es **determinista**. Para la misma entrada siempre elige lo mismo, y además tiene un sesgo: elige arriba o abajo en el 86 % de los casos.
+- En el 48 % de los retos, el primer movimiento ya apunta a una pared. Al chocar, Neurito **no cambia de casilla**, así que la entrada a la red es la misma y la red vuelve a elegir la misma pared. Se queda chocando hasta gastar los 45 intentos (36 choques por reto en promedio).
+- Si no choca, termina oscilando entre dos casillas (14.7 % de ciclos), porque cada casilla "manda" a la otra.
+- Solo llega en el 3 % de los casos, cuando la comida está muy cerca y la dirección elegida coincide por suerte.
+
+### 2. Entrenamiento: 100, 200 y 400 épocas (96 ocultas, tasa 0.45)
+
+| Épocas | Pérdida | Prec. entrenamiento | Prec. prueba | Comida | Atasco pared | Atasco ciclo | Choques por reto | Eficiencia |
+|---|---|---|---|---|---|---|---|---|
+| 0 | — | 25.3 % | 27.7 % | 3.1 % | 82.3 % | 14.7 % | 36.37 | — |
+| 100 | 0.1352 | 94.1 % | 84.9 % | 51.3 % | 2.1 % | 46.6 % | 0.91 | 98.3 % |
+| 200 | 0.0376 | 99.9 % | 90.1 % | 81.3 % | 0.7 % | 18.0 % | 0.31 | 99.4 % |
+| 400 | 0.0107 | 100.0 % | 91.5 % | 82.7 % | 0.4 % | 16.9 % | 0.19 | 99.3 % |
+
+**Conclusión:**
+- La pérdida baja de forma clara: de 0.135 a 0.011. La precisión de entrenamiento llega al 100 %: la red **memoriza** todos los ejemplos de entrenamiento.
+- La precisión de prueba sube menos (de 84.9 % a 91.5 %). La diferencia de casi 9 puntos entre entrenamiento y prueba muestra **algo de sobreajuste**.
+- La **precisión no equivale al porcentaje de laberintos completados**. Con 100 épocas la red acierta el 85 % de los movimientos, pero solo completa el 51 % de los retos. Un reto exige acertar *varias decisiones seguidas*, y un solo error puede bastar para entrar en un ciclo.
+- Entre 100 y 200 épocas el juego mejora mucho (de 51 % a 81 %). Entre 200 y 400 la pérdida sigue bajando, pero el juego casi no cambia (de 81 % a 83 %).
+- Cuando llega a la comida, lo hace por una ruta casi óptima (eficiencia del 99 %): la red sí aprendió el camino más corto de BFS.
+- Después de entrenar, casi no choca con paredes (0.19 choques por reto). El fallo típico es el **ciclo**: Neurito va y viene entre dos casillas.
+
+### 3. Red pura vs navegación asistida: ¿qué parte es del modelo y qué parte de las reglas?
+
+| Cerebro | Modo | Comida | Atasco pared | Atasco ciclo | Choques por reto | Eficiencia |
+|---|---|---|---|---|---|---|
+| Solo reglas (probabilidades iguales, 25 %) | Pura | 3.8 % | 96.2 % | 0.0 % | 42.05 | — |
+| Solo reglas (probabilidades iguales, 25 %) | Asistido | 93.0 % | 0.0 % | 7.0 % | 0.00 | 31.8 % |
+| Red sin entrenar | Pura | 3.1 % | 82.3 % | 14.7 % | 36.37 | — |
+| Red sin entrenar | Asistido | 87.8 % | 0.0 % | 12.2 % | 0.00 | 34.2 % |
+| Red 400 épocas | Pura | 82.7 % | 0.4 % | 16.9 % | 0.19 | 99.3 % |
+| Red 400 épocas | Asistido | **100.0 %** | 0.0 % | 0.0 % | 0.00 | 91.6 % |
+
+Para separar el modelo de las reglas, se probó un "cerebro" que no sabe nada: da 25 % a cada acción. Todo lo que logre en modo asistido lo hacen las reglas.
+
+**Conclusión:**
+- **Las reglas, por sí solas, ya encuentran la comida el 93 % de las veces.** Descartar paredes y penalizar casillas visitadas convierte a Neurito en un explorador que recorre el laberinto hasta tropezar con la comida. Como los mapas son pequeños (≈40 casillas), 45 intentos suelen alcanzar. Pero lo hace dando muchas vueltas: sus rutas son **unas 3 veces más largas** que la óptima (eficiencia del 32 %).
+- **La red entrenada aporta la dirección:** sola completa el 82.7 % por rutas casi óptimas (99 %), pero a veces se atasca en ciclos.
+- **Juntas se complementan:** las reglas eliminan choques y ciclos, y la red señala el camino. Así se llega al 100 % con rutas buenas (92 %).
+- Por eso el 100 % del modo asistido **no se puede atribuir solo a la red**. Para evaluar lo que aprendió el modelo hay que mirar la red pura (82.7 %). Las reglas son conocimiento que programamos nosotros, no conocimiento aprendido.
+
+### 4. Neuronas ocultas (400 épocas, tasa 0.45)
+
+| Ocultas | Pérdida | Prec. entrenamiento | Prec. prueba | Comida (pura) | Choques por reto | Comida (asistido) |
+|---|---|---|---|---|---|---|
+| 16 | 0.0342 | 99.4 % | 87.2 % | 74.3 % | 1.36 | 100 % |
+| 32 | 0.0161 | 100.0 % | 89.2 % | 78.4 % | 0.75 | 100 % |
+| 96 | 0.0107 | 100.0 % | 91.5 % | 82.7 % | 0.19 | 100 % |
+| 128 | 0.0103 | 100.0 % | 90.8 % | 85.3 % | 0.62 | 100 % |
+
+**Conclusión:** aquí sí se nota la capacidad de la red, a diferencia de Neurito 1.0 y 2.0. El problema es más difícil: 165 entradas, 4 clases y una respuesta que depende de la combinación de posición *y* meta. Con 16 neuronas la red casi memoriza el entrenamiento (99.4 %), pero generaliza peor (87.2 %) y completa solo el 74 % de los retos. Al subir a 96 o 128 mejoran la prueba y el juego. Entre 96 y 128 la diferencia es pequeña y mixta: 128 completa más retos, pero tiene menor precisión de prueba y choca más; más neuronas ya no ayudan mucho. Con asistencia todos llegan al 100 %, lo que confirma que las reglas tapan las diferencias entre modelos.
+
+### 5. Tasa de aprendizaje (96 ocultas)
+
+| Tasa | Épocas | Pérdida | Prec. prueba | Comida (pura) | ¿Converge? | Veces que la pérdida subió (de 399) |
+|---|---|---|---|---|---|---|
+| 0.05 | 100 | 0.6063 | 74.4 % | 24.2 % | | |
+| 0.05 | 400 | 0.2829 | 83.2 % | 46.1 % | Sí, muy lento | 1 |
+| **0.45** | 100 | 0.1352 | 84.9 % | 51.3 % | | |
+| **0.45** | 400 | 0.0107 | 91.5 % | 82.7 % | **Sí** | 85 |
+| 1.5 | 100 | 0.0121 | 91.8 % | 82.8 % | | |
+| 1.5 | 400 | 0.0016 | 93.4 % | 86.9 % | Sí, rápido | 46 |
+| 3.0 | 100 | 0.0046 | 92.9 % | 87.2 % | | |
+| 3.0 | 400 | 0.0007 | 93.9 % | 87.7 % | Sí, más rápido | 20 |
+| 6.0 | 400 | 1.4093 | 23.6 % | 4.5 % | **No** | 203 |
+| 10.0 | 400 | 1.6597 | 26.3 % | 3.9 % | **No** | 193 |
+
+**Conclusión (convergencia):**
+- **Con 0.45 sí converge.** La pérdida baja de 1.37 a 0.011. Sube 85 veces de 399, pero son pequeñas oscilaciones del descenso por mini-lotes cuando la pérdida ya está cerca de cero; la tendencia es siempre a bajar.
+- **0.05** converge de forma muy estable (solo sube una vez), pero es lenta: tras 400 épocas su pérdida (0.28) es peor que la de 0.45 a las 100 épocas, y completa solo el 46 % de los retos.
+- **1.5 y 3.0** convergen aún más rápido y llegan a una pérdida más baja. Para este problema, 0.45 es una tasa **conservadora**: funciona, pero no es la más rápida.
+- **6.0 y 10.0 no convergen:** la pérdida se queda en 1.4 o más (el azar con 4 clases es ln 4 ≈ 1.39), sube la mitad de las veces y la precisión queda en ≈25 %, como si no hubiera entrenado. Los pasos son tan grandes que la red "salta" por encima del mínimo en lugar de bajar hacia él. Neurito se comporta como sin entrenar: se atasca contra las paredes el 95 % de las veces.
+
+### 6. Cambiar de mapa (red 400 épocas)
+
+| Mapa | Retos de prueba | Prec. prueba | Comida (pura) | Comida (asistido) | Eficiencia (pura) |
+|---|---|---|---|---|---|
+| 1 | 210 | 92.4 % | 85.7 % | 100 % | 99.8 % |
+| 2 | 251 | 90.0 % | 78.5 % | 100 % | 98.3 % |
+| 3 | 255 | 92.2 % | 84.3 % | 100 % | 99.7 % |
+
+| Retos | Comida (pura) |
+|---|---|
+| Inicio y meta **entrenados** (716 retos) | 92.5 % |
+| Inicio y meta **no entrenados** (716 retos de prueba) | 82.7 % |
+
+**Conclusión:**
+- La red funciona en los tres mapas porque los tres forman parte del entrenamiento: conoce el identificador de cada mapa. El **mapa 2** es el más difícil (78.5 %); tiene muchas bifurcaciones y caminos alternativos, así que hay más casillas donde un pequeño error lleva a un ciclo.
+- En los retos con combinaciones de inicio y meta **no entrenadas** completa el 82.7 %: la red **generaliza** a pares nuevos, aunque 10 puntos por debajo de los pares entrenados.
+- Incluso en los retos entrenados no llega al 100 %, a pesar de tener 100 % de precisión de entrenamiento. Solo el *primer* paso es un ejemplo entrenado; después de moverse, el par (nueva posición, meta) puede pertenecer al conjunto de prueba.
+- **Limitación:** esto *no* demuestra que Neurito funcione en un laberinto nuevo. La red no ve las paredes: solo conoce el número del mapa. Con un cuarto mapa no sabría dónde están las paredes. Para eso habría que darle la cuadrícula de paredes como entrada y evaluar con mapas no usados en el entrenamiento.
+
+### 7. Cambiar el experto: BFS vs DFS vs A*
+
+Se reemplazó el profesor BFS por DFS (búsqueda en profundidad, con el mismo orden de direcciones) y por A* (con distancia Manhattan como heurística). Con cada experto se generaron nuevas etiquetas, con la misma división entrenamiento/prueba, y se entrenó una red igual (96 ocultas, tasa 0.45, 400 épocas). La navegación se mide en los mismos 716 retos de prueba.
+
+**El experto:**
+
+| Experto | Ruta vs óptima | Primer paso óptimo | Nodos explorados por consulta | Seguir sus etiquetas llega a la meta | Acciones distintas por casilla |
+|---|---|---|---|---|---|
+| BFS | 1.00× | 100 % | 35.1 | 100 % | 2.21 |
+| DFS | **2.24×** | 50.3 % | 18.6 | **7.7 %** | **1.04** |
+| A* | 1.00× | 100 % | **10.1** | 100 % | 2.21 |
+
+**Neurito entrenado con cada experto:**
+
+| Experto | Pérdida | Prec. prueba (vs su experto) | Comida (pura) | Comida (asistido) | Eficiencia |
+|---|---|---|---|---|---|
+| BFS | 0.0107 | 91.5 % | 82.7 % | 100 % | 99.3 % |
+| DFS | 0.0012 | **99.9 %** | **7.5 %** | **44.8 %** | — |
+| A* | 0.0110 | 92.6 % | **86.3 %** | 100 % | 99.6 % |
+
+**Conclusión:**
+- **DFS arruina a Neurito**, aunque la red tiene la mejor precisión (99.9 %) y la pérdida más baja. Es el caso más claro de que la precisión puede engañar:
+  - DFS no busca la ruta más corta: sigue la primera que encuentra, que en promedio mide 2.24 veces la óptima.
+  - Sus etiquetas son **inconsistentes entre sí**: la ruta DFS desde una casilla y la ruta DFS desde la siguiente no son la misma. Si sigues las etiquetas de DFS paso a paso (sin red), solo llegas a la meta el 7.7 % de las veces: das vueltas.
+  - Con un orden fijo (primero arriba), DFS da casi siempre **la misma acción en cada casilla sin importar dónde está la comida** (1.04 acciones distintas por casilla, frente a 2.21 de BFS). La red aprende esa regla fácil, "en esta casilla ve hacia arriba", e **ignora la meta**. Por eso acierta el 99.9 %: imitar a DFS es trivial, pero inútil.
+  - Ni la asistencia lo salva (44.8 %, peor que las reglas solas con 93 %): las probabilidades de la red empujan en una dirección que no tiene que ver con la comida.
+- **A* mejora un poco a Neurito** (86.3 % frente a 82.7 %) y sigue siendo óptimo. A* y BFS dan rutas igual de cortas, pero cuando hay varias rutas del mismo largo pueden elegir distinto (coinciden en el 96.3 % de las etiquetas). La heurística de A* favorece las casillas más cercanas a la comida en línea recta, así que sus etiquetas siguen un patrón más regular ("acércate a la comida"), probablemente más fácil de generalizar para la red.
+- **Costo del experto:** A* explora 10 nodos por consulta, contra 35 de BFS (que recorre todo el mapa desde la meta) y 19 de DFS. Sin embargo, un BFS desde la meta calcula de una vez la etiqueta de *todas* las posiciones para esa meta, así que para generar el conjunto de datos completo BFS sigue siendo barato.
+- **Lección:** en el aprendizaje por imitación, la red solo puede ser tan buena como su profesor. Un experto óptimo y consistente (BFS, A*) produce un buen Neurito; un experto no óptimo e inconsistente (DFS) produce un Neurito que imita perfectamente un mal comportamiento.
+
+## Conclusión general
+
+1. **Precisión ≠ éxito en el laberinto.** Llegar a la comida exige una *secuencia* de decisiones correctas, y un solo error puede dejar a Neurito en un ciclo. Con 85 % de precisión completa solo el 51 % de los retos. El caso de DFS (99.9 % de precisión y 7.5 % de éxito) muestra que la precisión solo mide qué tan bien se imita al experto, no si el experto es bueno.
+2. **Las reglas del modo asistido hacen mucho trabajo.** Por sí solas encuentran la comida el 93 % de las veces, aunque con rutas tres veces más largas. Lo que aporta la red es la *dirección* hacia la comida.
+3. **La red generaliza a combinaciones nuevas de inicio y meta** (82.7 %), pero solo dentro de los tres mapas conocidos: no aprendió a "ver" paredes.
+4. **La calidad del profesor importa más que el tamaño de la red.** Cambiar BFS por DFS tiene más efecto que cualquier cambio de neuronas o de tasa de aprendizaje.
